@@ -1,6 +1,6 @@
 import { Scenes, Markup } from 'telegraf'
 import { resolveCountry, convertToEUR, isCloseToAnyProduct } from '../services/fx.service.js'
-import { appendPaymentRow } from '../services/google.service.js' // Убрали uploadTelegramFileToDrive
+import { appendPaymentRow } from '../services/google.service.js'
 import { insertPayment } from '../services/supabase.service.js'
 import { parseDateTimeOrThrow, parseMoneyOrThrow, isValidUrl } from '../utils/validators.js'
 import { formatSummary } from '../utils/format.js'
@@ -31,8 +31,8 @@ export function createPaymentWizard() {
     // 1. Выбор продукта
     async (ctx) => {
       if (!ctx.callbackQuery?.data) return
-      const data = ctx.callbackQuery.data
       await ctx.answerCbQuery()
+      const data = ctx.callbackQuery.data
       
       const prodName = data.replace('PROD_', '').replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').trim()
       
@@ -74,11 +74,9 @@ export function createPaymentWizard() {
         return ctx.reply('Пришли фото или файл.')
       }
 
-      // Вместо загрузки просто ставим пометку
       ctx.wizard.state.payment.screenshotUrl = 'Скриншот получен (файл не сохранен)'
       
       await ctx.reply('✅ Скриншот принят.')
-
       const example = getNowExample()
       await ctx.reply(`Дата и время транзакции (например: ${example}):`)
       return ctx.wizard.next()
@@ -135,42 +133,56 @@ export function createPaymentWizard() {
     // 7. Подтверждение суммы
     async (ctx) => {
       if (ctx.callbackQuery?.data === 'AM_EDIT') {
+        await ctx.answerCbQuery()
         await ctx.reply('Введи сумму заново:')
         return ctx.wizard.selectStep(6)
       }
+      await ctx.answerCbQuery()
       await askType(ctx)
       return ctx.wizard.next()
     },
 
-    // 8. Тип оплаты
+    // 8. Тип оплаты (ИСПРАВЛЕНО)
     async (ctx) => {
       if (!ctx.callbackQuery?.data) return
+      await ctx.answerCbQuery()
       const t = ctx.callbackQuery.data.replace('TYPE_', '')
+      
       if (t === 'Другое') {
         await ctx.reply('Напиши тип вручную:')
-        return ctx.wizard.next()
+        return ctx.wizard.next() // Идем на шаг 9
       }
+
+      // Если выбрали кнопку - сохраняем и ПРЫГАЕМ НА ШАГ 10 (Финал)
       ctx.wizard.state.payment.paymentType = t
-      return showFinal(ctx)
+      await showFinal(ctx)
+      return ctx.wizard.selectStep(10) // <--- ВОТ ТУТ БЫЛА ОШИБКА, МЫ НЕ ПРЫГАЛИ
     },
 
-    // 9. Ввод типа вручную
+    // 9. Ввод типа вручную (ИСПРАВЛЕНО)
     async (ctx) => {
       if (!ctx.message?.text) return
       ctx.wizard.state.payment.paymentType = ctx.message.text
-      return showFinal(ctx)
+      
+      // Показываем финал и идем на следующий шаг (10)
+      await showFinal(ctx)
+      return ctx.wizard.next() 
     },
 
-    // 10. Финал
+    // 10. Финал (ИСПРАВЛЕНО)
     async (ctx) => {
       const data = ctx.callbackQuery?.data
+      if (data) await ctx.answerCbQuery().catch(() => {}) // Гасим анимацию кнопки
+
       if (data === 'CANCEL') {
-        await ctx.reply('Отменено.')
+        await ctx.reply('❌ Отменено.')
         return ctx.scene.leave()
       }
+
       if (data === 'SEND') {
         await ctx.reply('⏳ Сохраняю данные...')
         const p = ctx.wizard.state.payment
+
         try {
           // 1. В таблицу
           await appendPaymentRow([
@@ -189,11 +201,12 @@ export function createPaymentWizard() {
           await insertPayment(p)
           
           await ctx.reply('✅ Платеж успешно сохранен!')
+          return ctx.scene.leave()
         } catch (e) {
           console.error(e)
-          await ctx.reply('❌ Ошибка сохранения. Свяжись с админом.')
+          // Выводим ошибку юзеру, чтобы понимать что не так
+          await ctx.reply(`❌ Ошибка сохранения: ${e.message}`)
         }
-        return ctx.scene.leave()
       }
     }
   )
@@ -213,7 +226,6 @@ function showFinal(ctx) {
   })
 }
 
-// Хелпер для даты
 function getNowExample() {
   const now = new Date()
   const pad = (n) => String(n).padStart(2, '0')
