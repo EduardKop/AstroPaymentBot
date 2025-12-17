@@ -1,6 +1,6 @@
 import { Scenes, Markup } from 'telegraf'
 import { resolveCountry, convertToEUR, isCloseToAnyProduct } from '../services/fx.service.js'
-import { appendPaymentRow, uploadTelegramFileToDrive } from '../services/google.service.js'
+import { appendPaymentRow } from '../services/google.service.js' // Убрали uploadTelegramFileToDrive
 import { insertPayment } from '../services/supabase.service.js'
 import { parseDateTimeOrThrow, parseMoneyOrThrow, isValidUrl } from '../utils/validators.js'
 import { formatSummary } from '../utils/format.js'
@@ -65,26 +65,22 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 4. Скриншот (Загрузка на Drive)
+    // 4. Скриншот (ЗАГЛУШКА)
     async (ctx) => {
-      if (!ctx.message?.photo && !ctx.message?.document) {
+      const hasPhoto = ctx.message?.photo?.length > 0
+      const hasDoc = !!ctx.message?.document
+
+      if (!hasPhoto && !hasDoc) {
         return ctx.reply('Пришли фото или файл.')
       }
 
-      await ctx.reply('⏳ Загружаю скриншот на Диск...')
-      try {
-        const link = await uploadTelegramFileToDrive(ctx)
-        ctx.wizard.state.payment.screenshotUrl = link
-        await ctx.reply('✅ Скриншот загружен.')
-      } catch (e) {
-        console.error('Upload Error:', e)
-        ctx.wizard.state.payment.screenshotUrl = 'UPLOAD_FAILED'
-        await ctx.reply('⚠️ Ошибка загрузки скриншота, но идем дальше.')
-      }
+      // Вместо загрузки просто ставим пометку
+      ctx.wizard.state.payment.screenshotUrl = 'Скриншот получен (файл не сохранен)'
+      
+      await ctx.reply('✅ Скриншот принят.')
 
-      const now = new Date()
-      const ex = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`
-      await ctx.reply(`Дата и время транзакции (например: ${ex}):`)
+      const example = getNowExample()
+      await ctx.reply(`Дата и время транзакции (например: ${example}):`)
       return ctx.wizard.next()
     },
 
@@ -94,7 +90,8 @@ export function createPaymentWizard() {
         const t = ctx.message?.text || ''
         ctx.wizard.state.payment.transactionAt = parseDateTimeOrThrow(t)
       } catch {
-        return ctx.reply('Неверный формат. Нужно YYYY-MM-DD HH:mm')
+        const example = getNowExample()
+        return ctx.reply(`Неверный формат. Нужно YYYY-MM-DD HH:mm (например: ${example})`)
       }
 
       const mgr = ctx.wizard.state.payment.manager
@@ -205,6 +202,7 @@ export function createPaymentWizard() {
 function askType(ctx) {
   return ctx.reply('Тип платежа:', Markup.inlineKeyboard(TYPES.map(t => [Markup.button.callback(t, `TYPE_${t}`)])))
 }
+
 function showFinal(ctx) {
   return ctx.reply(formatSummary(ctx.wizard.state.payment), {
     parse_mode: 'HTML',
@@ -213,4 +211,11 @@ function showFinal(ctx) {
       [Markup.button.callback('❌ Отмена', 'CANCEL')]
     ])
   })
+}
+
+// Хелпер для даты
+function getNowExample() {
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
 }
