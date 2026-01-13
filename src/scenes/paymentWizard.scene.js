@@ -8,7 +8,12 @@ import { formatSummary } from '../utils/format.js'
 const PRODUCTS = [
   '❤️ Лич5', '❤️ Лич1', '💰 Финансы1', '💰 Финансы5', '🔮 Общий1', '🔮 Общий5',
   '👶 Дети', '🌀 Мандала лич', '🌀 Мандала фин', '🃏 ТАРО', '☀️ Соляр',
-  '📅 Календарь', '🚫 Ничего не подходит'
+  '📅 Календарь', 
+  // <--- НОВЫЕ ПРОДУКТЫ (текст на кнопках)
+  '🎓 Курс (с куратором)', 
+  '🎓 Курс (без куратора)', 
+  // -------------------------
+  '🚫 Ничего не подходит'
 ]
 const TYPES = ['Lava', 'JETFEX', 'IBAN', 'Прямые реквизиты', 'Другое']
 
@@ -22,8 +27,9 @@ export function createPaymentWizard() {
         manager: ctx.state.manager,
         createdAt: new Date().toISOString()
       }
+      // Делаем кнопки в 2 колонки, чтобы список не был бесконечным
       await ctx.reply('Выбери продукт:', Markup.inlineKeyboard(
-        PRODUCTS.map(p => [Markup.button.callback(p, `PROD_${p}`)])
+        PRODUCTS.map(p => Markup.button.callback(p, `PROD_${p}`)), { columns: 2 }
       ))
       return ctx.wizard.next()
     },
@@ -34,7 +40,16 @@ export function createPaymentWizard() {
       await ctx.answerCbQuery()
       const data = ctx.callbackQuery.data
       
-      const prodName = data.replace('PROD_', '').replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').trim()
+      // Сначала получаем "чистое" имя, убирая PROD_
+      let rawName = data.replace('PROD_', '')
+
+      // <--- ЛОГИКА ПОДМЕНЫ НАЗВАНИЙ ДЛЯ БАЗЫ
+      let prodName = rawName.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').trim()
+
+      // Если выбрали новые кнопки - переписываем название для БД жестко
+      if (rawName.includes('Курс (с куратором)')) prodName = 'Курс (куратор)'
+      if (rawName.includes('Курс (без куратора)')) prodName = 'Курс'
+      // -----------------------------------------------------
       
       if (data.includes('Ничего не подходит')) {
         await ctx.reply('Напиши название продукта вручную:')
@@ -42,10 +57,12 @@ export function createPaymentWizard() {
       }
 
       ctx.wizard.state.payment.product = prodName
-      await ctx.reply('Ссылка на клиента в CRM (полный URL):')
+      await ctx.reply(`Выбран продукт: ${prodName}\n\nСсылка на клиента в CRM (полный URL):`)
       return ctx.wizard.selectStep(3)
     },
 
+    // ... ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ (шаги 2, 3, 4, 5...)
+    
     // 2. Ручной ввод продукта
     async (ctx) => {
       const text = ctx.message?.text?.trim()
@@ -65,7 +82,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 4. Скриншот (ЗАГЛУШКА)
+    // 4. Скриншот
     async (ctx) => {
       const hasPhoto = ctx.message?.photo?.length > 0
       const hasDoc = !!ctx.message?.document
@@ -123,6 +140,7 @@ export function createPaymentWizard() {
            )
            return ctx.wizard.next()
         }
+        // Если сумма совпала с тарифом, сохраняем подсказку
         p.productHint = check.productName
       }
       
@@ -142,7 +160,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 8. Тип оплаты (ИСПРАВЛЕНО)
+    // 8. Тип оплаты
     async (ctx) => {
       if (!ctx.callbackQuery?.data) return
       await ctx.answerCbQuery()
@@ -150,29 +168,26 @@ export function createPaymentWizard() {
       
       if (t === 'Другое') {
         await ctx.reply('Напиши тип вручную:')
-        return ctx.wizard.next() // Идем на шаг 9
+        return ctx.wizard.next() 
       }
 
-      // Если выбрали кнопку - сохраняем и ПРЫГАЕМ НА ШАГ 10 (Финал)
       ctx.wizard.state.payment.paymentType = t
       await showFinal(ctx)
-      return ctx.wizard.selectStep(10) // <--- ВОТ ТУТ БЫЛА ОШИБКА, МЫ НЕ ПРЫГАЛИ
+      return ctx.wizard.selectStep(10)
     },
 
-    // 9. Ввод типа вручную (ИСПРАВЛЕНО)
+    // 9. Ввод типа вручную
     async (ctx) => {
       if (!ctx.message?.text) return
       ctx.wizard.state.payment.paymentType = ctx.message.text
-      
-      // Показываем финал и идем на следующий шаг (10)
       await showFinal(ctx)
       return ctx.wizard.next() 
     },
 
-    // 10. Финал (ИСПРАВЛЕНО)
+    // 10. Финал
     async (ctx) => {
       const data = ctx.callbackQuery?.data
-      if (data) await ctx.answerCbQuery().catch(() => {}) // Гасим анимацию кнопки
+      if (data) await ctx.answerCbQuery().catch(() => {}) 
 
       if (data === 'CANCEL') {
         await ctx.reply('❌ Отменено.')
@@ -184,7 +199,6 @@ export function createPaymentWizard() {
         const p = ctx.wizard.state.payment
 
         try {
-          // 1. В таблицу
           await appendPaymentRow([
             new Date().toLocaleString('ru-RU'),
             p.manager.name,
@@ -197,14 +211,12 @@ export function createPaymentWizard() {
             p.paymentType,
             p.product
           ])
-          // 2. В Supabase
           await insertPayment(p)
           
           await ctx.reply('✅ Платеж успешно сохранен!')
           return ctx.scene.leave()
         } catch (e) {
           console.error(e)
-          // Выводим ошибку юзеру, чтобы понимать что не так
           await ctx.reply(`❌ Ошибка сохранения: ${e.message}`)
         }
       }
