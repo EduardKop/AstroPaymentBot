@@ -1,7 +1,7 @@
 import { Scenes, Markup } from 'telegraf'
 import { resolveCountry, convertToEUR, isCloseToAnyProduct } from '../services/fx.service.js'
 import { appendPaymentRow } from '../services/google.service.js'
-import { insertPayment } from '../services/supabase.service.js'
+import { insertPayment, findManagerByTelegramIdInDB } from '../services/supabase.service.js' // <--- ДОБАВИЛИ ИМПОРТ
 import { parseDateTimeOrThrow, parseMoneyOrThrow, isValidUrl } from '../utils/validators.js'
 import { formatSummary } from '../utils/format.js'
 
@@ -21,12 +21,17 @@ export function createPaymentWizard() {
 
     // 0. Старт
     async (ctx) => {
+      // Если мы пришли сюда через reenter, убедимся что manager есть
+      if (!ctx.state.manager && ctx.wizard.state.manager) {
+         ctx.state.manager = ctx.wizard.state.manager
+      }
+
       ctx.wizard.state.payment = {
         manager: ctx.state.manager,
         createdAt: new Date().toISOString()
       }
       await ctx.reply(
-        'Выбери продукт (или введи /reset для отмены):', 
+        '👋 Привет! Выбери продукт (или введи /reset для сброса):', 
         Markup.inlineKeyboard(
           PRODUCTS.map(p => Markup.button.callback(p, `PROD_${p}`)), { columns: 2 }
         )
@@ -65,31 +70,25 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 3. CRM / Instagram Link (✅ ИЗВЛЕЧЕНИЕ НИКНЕЙМА)
+    // 3. CRM / Instagram Link
     async (ctx) => {
       const text = ctx.message?.text?.trim()
       
-      // 1. Проверяем, что это валидная ссылка
       if (!isValidUrl(text)) {
         return ctx.reply('⚠️ Это не похоже на ссылку. Ссылка должна начинаться с https://')
       }
 
-      // 2. Проверяем, что это Instagram
       if (!text.includes('instagram.com')) {
-        return ctx.reply('❌ Ссылка должна вести на Instagram (https://www.instagram.com/Никнейм/)')
+        return ctx.reply(`❌ Ссылка должна вести на Instagram (https://www.instagram.com/Никнейм/)`)
       }
 
-      // 3. Извлекаем никнейм
-      // Ищем все символы после "instagram.com/" до следующего слэша, вопроса или конца строки
       const match = text.match(/instagram\.com\/([^/?#]+)/i)
       
       if (!match || !match[1]) {
         return ctx.reply('❌ Не удалось найти никнейм в ссылке. Проверь формат: https://www.instagram.com/username/')
       }
 
-      const username = match[1] // Получаем чистый ник
-
-      // Сохраняем в объект платежа (добавляем @ для ясности в базе/гугл таблице)
+      const username = match[1]
       ctx.wizard.state.payment.crmLink = `@${username}`
       
       await ctx.reply(`✅ Никнейм принят: @${username}\n\nПришли скриншот оплаты (фото или файл):`)
@@ -226,7 +225,7 @@ export function createPaymentWizard() {
           ])
           await insertPayment(p)
           
-          await ctx.reply('✅ Платеж успешно сохранен!')
+          await ctx.reply('✅ Платеж успешно сохранен! Можешь вводить следующий.')
           return ctx.scene.leave()
         } catch (e) {
           console.error(e)
@@ -236,15 +235,31 @@ export function createPaymentWizard() {
     }
   )
 
-  // 1. ОБРАБОТЧИК /start
-  // Если нажать /start во время визарда — просто выходим (чтобы перезапустить бота)
+  // ✅ 1. ИСПРАВЛЕННЫЙ ХЕНДЛЕР /start
+  // Теперь он НЕ выходит, а ПЕРЕЗАПУСКАЕТ процесс с нуля
   wizard.command('start', async (ctx) => {
-    await ctx.scene.leave()
-    await ctx.reply('🏠 Вы вышли из режима ввода. Нажмите /start или выберите команду меню.')
+    try {
+      // Повторяем проверку менеджера (так как reenter сбрасывает стейт)
+      const manager = await findManagerByTelegramIdInDB(ctx.from.id)
+      
+      if (!manager) {
+        await ctx.scene.leave()
+        return ctx.reply('⛔ Доступ запрещен. Тебя нет в базе или ты не активен.')
+      }
+
+      // Сохраняем менеджера и перезаходим в сцену
+      ctx.state.manager = manager
+      await ctx.reply('🔄 Перезапуск ввода...')
+      return ctx.scene.reenter()
+
+    } catch (e) {
+      console.error('Start in wizard error:', e)
+      await ctx.scene.leave()
+      return ctx.reply('Ошибка. Попробуй /start еще раз.')
+    }
   })
 
-  // 2. ОБРАБОТЧИК ОТМЕНЫ
-  // Срабатывает на любом шаге
+  // ✅ 2. ОБЫЧНАЯ ОТМЕНА
   wizard.command(['reset', 'cancel'], async (ctx) => {
     await ctx.reply('❌ Ввод данных отменен.')
     return ctx.scene.leave()
