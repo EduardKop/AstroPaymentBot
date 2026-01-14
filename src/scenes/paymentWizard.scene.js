@@ -19,7 +19,7 @@ export function createPaymentWizard() {
   const wizard = new Scenes.WizardScene(
     'paymentWizard',
 
-    // 0. Start
+    // 0. Старт
     async (ctx) => {
       ctx.wizard.state.payment = {
         manager: ctx.state.manager,
@@ -34,7 +34,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 1. Select Product
+    // 1. Выбор продукта
     async (ctx) => {
       if (!ctx.callbackQuery?.data) return
       await ctx.answerCbQuery()
@@ -56,7 +56,7 @@ export function createPaymentWizard() {
       return ctx.wizard.selectStep(3)
     },
     
-    // 2. Manual Product Entry
+    // 2. Ручной ввод продукта
     async (ctx) => {
       const text = ctx.message?.text?.trim()
       if (!text) return ctx.reply('Введи текст.')
@@ -65,27 +65,38 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 3. CRM / Instagram Link (With Validation)
+    // 3. CRM / Instagram Link (✅ ИЗВЛЕЧЕНИЕ НИКНЕЙМА)
     async (ctx) => {
       const text = ctx.message?.text?.trim()
       
-      // Basic URL check
+      // 1. Проверяем, что это валидная ссылка
       if (!isValidUrl(text)) {
         return ctx.reply('⚠️ Это не похоже на ссылку. Ссылка должна начинаться с https://')
       }
 
-      // Instagram specific check
-      const instagramPrefix = 'https://www.instagram.com/'
-      if (!text.startsWith(instagramPrefix)) {
-        return ctx.reply(`❌ Неверный формат.\nСсылка должна начинаться строго с: ${instagramPrefix}\nПопробуй еще раз или нажми /reset`)
+      // 2. Проверяем, что это Instagram
+      if (!text.includes('instagram.com')) {
+        return ctx.reply('❌ Ссылка должна вести на Instagram (https://www.instagram.com/Никнейм/)')
       }
+
+      // 3. Извлекаем никнейм
+      // Ищем все символы после "instagram.com/" до следующего слэша, вопроса или конца строки
+      const match = text.match(/instagram\.com\/([^/?#]+)/i)
       
-      ctx.wizard.state.payment.crmLink = text
-      await ctx.reply('Пришли скриншот оплаты (фото или файл):')
+      if (!match || !match[1]) {
+        return ctx.reply('❌ Не удалось найти никнейм в ссылке. Проверь формат: https://www.instagram.com/username/')
+      }
+
+      const username = match[1] // Получаем чистый ник
+
+      // Сохраняем в объект платежа (добавляем @ для ясности в базе/гугл таблице)
+      ctx.wizard.state.payment.crmLink = `@${username}`
+      
+      await ctx.reply(`✅ Никнейм принят: @${username}\n\nПришли скриншот оплаты (фото или файл):`)
       return ctx.wizard.next()
     },
 
-    // 4. Screenshot
+    // 4. Скриншот
     async (ctx) => {
       const hasPhoto = ctx.message?.photo?.length > 0
       const hasDoc = !!ctx.message?.document
@@ -102,7 +113,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 5. Date
+    // 5. Дата
     async (ctx) => {
       try {
         const t = ctx.message?.text || ''
@@ -121,7 +132,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 6. Amount
+    // 6. Сумма
     async (ctx) => {
       let val
       try { val = parseMoneyOrThrow(ctx.message?.text) } 
@@ -150,7 +161,7 @@ export function createPaymentWizard() {
       return ctx.wizard.selectStep(8)
     },
 
-    // 7. Confirm Amount
+    // 7. Подтверждение суммы
     async (ctx) => {
       if (ctx.callbackQuery?.data === 'AM_EDIT') {
         await ctx.answerCbQuery()
@@ -162,7 +173,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 8. Payment Type
+    // 8. Тип оплаты
     async (ctx) => {
       if (!ctx.callbackQuery?.data) return
       await ctx.answerCbQuery()
@@ -178,7 +189,7 @@ export function createPaymentWizard() {
       return ctx.wizard.selectStep(10)
     },
 
-    // 9. Manual Payment Type
+    // 9. Ввод типа вручную
     async (ctx) => {
       if (!ctx.message?.text) return
       ctx.wizard.state.payment.paymentType = ctx.message.text
@@ -186,7 +197,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next() 
     },
 
-    // 10. Final
+    // 10. Финал
     async (ctx) => {
       const data = ctx.callbackQuery?.data
       if (data) await ctx.answerCbQuery().catch(() => {}) 
@@ -225,15 +236,15 @@ export function createPaymentWizard() {
     }
   )
 
-  // 1. HANDLER FOR /start
-  // If user presses /start inside the scene, just exit silently to main menu
+  // 1. ОБРАБОТЧИК /start
+  // Если нажать /start во время визарда — просто выходим (чтобы перезапустить бота)
   wizard.command('start', async (ctx) => {
     await ctx.scene.leave()
-    await ctx.reply('🏠 Вы вышли из режима ввода оплаты. Нажмите /start или выберите команду меню.')
+    await ctx.reply('🏠 Вы вышли из режима ввода. Нажмите /start или выберите команду меню.')
   })
 
-  // 2. HANDLER FOR CANCEL
-  // Works on any step to abort the process
+  // 2. ОБРАБОТЧИК ОТМЕНЫ
+  // Срабатывает на любом шаге
   wizard.command(['reset', 'cancel'], async (ctx) => {
     await ctx.reply('❌ Ввод данных отменен.')
     return ctx.scene.leave()
