@@ -9,16 +9,15 @@ const PRODUCTS = [
   '❤️ Лич5', '❤️ Лич1', '💰 Финансы1', '💰 Финансы5', '🔮 Общий1', '🔮 Общий5',
   '👶 Дети', '🌀 Мандала лич', '🌀 Мандала фин', '🃏 ТАРО', '☀️ Соляр',
   '📅 Календарь', 
-  // <--- НОВЫЕ ПРОДУКТЫ (текст на кнопках)
   '🎓 Курс (с куратором)', 
   '🎓 Курс (без куратора)', 
-  // -------------------------
   '🚫 Ничего не подходит'
 ]
 const TYPES = ['Lava', 'JETFEX', 'IBAN', 'Прямые реквизиты', 'Другое']
 
 export function createPaymentWizard() {
-  return new Scenes.WizardScene(
+  // 1. Создаем сцену и сохраняем в переменную (вместо return new...)
+  const wizard = new Scenes.WizardScene(
     'paymentWizard',
 
     // 0. Старт
@@ -27,10 +26,12 @@ export function createPaymentWizard() {
         manager: ctx.state.manager,
         createdAt: new Date().toISOString()
       }
-      // Делаем кнопки в 2 колонки, чтобы список не был бесконечным
-      await ctx.reply('Выбери продукт:', Markup.inlineKeyboard(
-        PRODUCTS.map(p => Markup.button.callback(p, `PROD_${p}`)), { columns: 2 }
-      ))
+      await ctx.reply(
+        'Выбери продукт (или введи /reset для отмены):', 
+        Markup.inlineKeyboard(
+          PRODUCTS.map(p => Markup.button.callback(p, `PROD_${p}`)), { columns: 2 }
+        )
+      )
       return ctx.wizard.next()
     },
 
@@ -40,16 +41,11 @@ export function createPaymentWizard() {
       await ctx.answerCbQuery()
       const data = ctx.callbackQuery.data
       
-      // Сначала получаем "чистое" имя, убирая PROD_
       let rawName = data.replace('PROD_', '')
-
-      // <--- ЛОГИКА ПОДМЕНЫ НАЗВАНИЙ ДЛЯ БАЗЫ
       let prodName = rawName.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').trim()
 
-      // Если выбрали новые кнопки - переписываем название для БД жестко
       if (rawName.includes('Курс (с куратором)')) prodName = 'Курс (куратор)'
       if (rawName.includes('Курс (без куратора)')) prodName = 'Курс'
-      // -----------------------------------------------------
       
       if (data.includes('Ничего не подходит')) {
         await ctx.reply('Напиши название продукта вручную:')
@@ -57,25 +53,33 @@ export function createPaymentWizard() {
       }
 
       ctx.wizard.state.payment.product = prodName
-      await ctx.reply(`Выбран продукт: ${prodName}\n\nСсылка на клиента в CRM (полный URL):`)
+      await ctx.reply(`Выбран продукт: ${prodName}\n\nСсылка на клиента (https://www.instagram.com/Никнейм/):`)
       return ctx.wizard.selectStep(3)
     },
-
-    // ... ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ (шаги 2, 3, 4, 5...)
     
     // 2. Ручной ввод продукта
     async (ctx) => {
       const text = ctx.message?.text?.trim()
       if (!text) return ctx.reply('Введи текст.')
       ctx.wizard.state.payment.product = text
-      await ctx.reply('Ссылка на клиента в CRM (полный URL):')
+      await ctx.reply('Ссылка на клиента в инстаграм (полный URL https://www.instagram.com/Никнейм/ ):')
       return ctx.wizard.next()
     },
 
-    // 3. CRM
+    // 3. CRM / Instagram Link (✅ С ПРОВЕРКОЙ)
     async (ctx) => {
       const text = ctx.message?.text?.trim()
-      if (!isValidUrl(text)) return ctx.reply('Нужна валидная ссылка (https://...)')
+      
+      // Проверка на валидный URL
+      if (!isValidUrl(text)) {
+        return ctx.reply('⚠️ Это не похоже на ссылку. Ссылка должна начинаться с https://')
+      }
+
+      // Проверка на Instagram
+      const instagramPrefix = 'https://www.instagram.com/'
+      if (!text.startsWith(instagramPrefix)) {
+        return ctx.reply(`❌ Неверный формат.\nСсылка должна начинаться строго с: ${instagramPrefix}\nПопробуй еще раз или нажми /reset`)
+      }
       
       ctx.wizard.state.payment.crmLink = text
       await ctx.reply('Пришли скриншот оплаты (фото или файл):')
@@ -132,7 +136,7 @@ export function createPaymentWizard() {
         const check = isCloseToAnyProduct(p.amountEUR)
         if (!check.ok) {
            await ctx.reply(
-             `⚠️ ${val} ${p.currency} ≈ ${p.amountEUR} EUR. Не похоже на стандартный тариф. Верно?`,
+             `${val} ${p.currency} ≈ ${p.amountEUR} EUR. Верно?`,
              Markup.inlineKeyboard([
                Markup.button.callback('✅ Да', 'AM_OK'),
                Markup.button.callback('✏️ Нет', 'AM_EDIT')
@@ -140,7 +144,6 @@ export function createPaymentWizard() {
            )
            return ctx.wizard.next()
         }
-        // Если сумма совпала с тарифом, сохраняем подсказку
         p.productHint = check.productName
       }
       
@@ -222,6 +225,15 @@ export function createPaymentWizard() {
       }
     }
   )
+
+  // ✅ ДОБАВЛЯЕМ "АВАРИЙНЫЙ ВЫХОД"
+  // Эта команда сработает на ЛЮБОМ шаге сцены
+  wizard.command(['reset', 'cancel', 'start'], async (ctx) => {
+    await ctx.reply('🔄 Ввод данных сброшен. Можете начать заново командой меню.')
+    return ctx.scene.leave()
+  })
+
+  return wizard
 }
 
 function askType(ctx) {
