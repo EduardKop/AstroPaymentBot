@@ -94,7 +94,7 @@ export function createPaymentWizard() {
       }
 
       const username = match[1] // Чистый ник
-      ctx.wizard.state.payment.crmLink = `@${username}` // Сохраняем как @username
+      ctx.wizard.state.payment.crmLink = `${username}` // Сохраняем как @username
       
       await ctx.reply(`✅ Клиент: @${username}\n\nТеперь пришли скриншот оплаты (фото или файл):`)
       return ctx.wizard.next()
