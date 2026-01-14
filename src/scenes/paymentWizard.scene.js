@@ -1,7 +1,7 @@
 import { Scenes, Markup } from 'telegraf'
 import { resolveCountry, convertToEUR, isCloseToAnyProduct } from '../services/fx.service.js'
 import { appendPaymentRow } from '../services/google.service.js'
-import { insertPayment, findManagerByTelegramIdInDB } from '../services/supabase.service.js' // <--- ДОБАВИЛИ ИМПОРТ
+import { insertPayment } from '../services/supabase.service.js'
 import { parseDateTimeOrThrow, parseMoneyOrThrow, isValidUrl } from '../utils/validators.js'
 import { formatSummary } from '../utils/format.js'
 
@@ -16,22 +16,17 @@ const PRODUCTS = [
 const TYPES = ['Lava', 'JETFEX', 'IBAN', 'Прямые реквизиты', 'Другое']
 
 export function createPaymentWizard() {
-  const wizard = new Scenes.WizardScene(
+  return new Scenes.WizardScene(
     'paymentWizard',
 
-    // 0. Старт
+    // 0. СТАРТ
     async (ctx) => {
-      // Если мы пришли сюда через reenter, убедимся что manager есть
-      if (!ctx.state.manager && ctx.wizard.state.manager) {
-         ctx.state.manager = ctx.wizard.state.manager
-      }
-
       ctx.wizard.state.payment = {
-        manager: ctx.state.manager,
+        manager: ctx.state.manager, // Берется из глобального state при входе
         createdAt: new Date().toISOString()
       }
       await ctx.reply(
-        '👋 Привет! Выбери продукт (или введи /reset для сброса):', 
+        '🚀 Новый платеж. Выбери продукт:', 
         Markup.inlineKeyboard(
           PRODUCTS.map(p => Markup.button.callback(p, `PROD_${p}`)), { columns: 2 }
         )
@@ -39,15 +34,19 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 1. Выбор продукта
+    // 1. ВЫБОР ПРОДУКТА (Кнопки)
     async (ctx) => {
-      if (!ctx.callbackQuery?.data) return
+      // Если юзер ввел текст вместо кнопки/start, игнорируем или просим нажать кнопку
+      if (!ctx.callbackQuery?.data) return 
+
       await ctx.answerCbQuery()
       const data = ctx.callbackQuery.data
       
       let rawName = data.replace('PROD_', '')
+      // Чистим от эмодзи для БД
       let prodName = rawName.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').trim()
 
+      // Подмена для курсов
       if (rawName.includes('Курс (с куратором)')) prodName = 'Курс (куратор)'
       if (rawName.includes('Курс (без куратора)')) prodName = 'Курс'
       
@@ -57,98 +56,103 @@ export function createPaymentWizard() {
       }
 
       ctx.wizard.state.payment.product = prodName
-      await ctx.reply(`Выбран продукт: ${prodName}\n\nСсылка на клиента (https://www.instagram.com/Никнейм/):`)
-      return ctx.wizard.selectStep(3)
+      await ctx.reply(`Выбран: ${prodName}\n\nВставь ссылку на Instagram клиента (https://www.instagram.com/Ник/):`)
+      return ctx.wizard.selectStep(3) // Перепрыгиваем шаг ручного ввода
     },
     
-    // 2. Ручной ввод продукта
+    // 2. РУЧНОЙ ВВОД ПРОДУКТА (если выбрали "Ничего не подходит")
     async (ctx) => {
-      const text = ctx.message?.text?.trim()
-      if (!text) return ctx.reply('Введи текст.')
+      if (!ctx.message?.text) return // Игнорируем не текст
+      
+      const text = ctx.message.text.trim()
       ctx.wizard.state.payment.product = text
-      await ctx.reply('Ссылка на клиента в инстаграм (полный URL https://www.instagram.com/Никнейм/ ):')
+      await ctx.reply('Вставь ссылку на Instagram клиента (https://www.instagram.com/Ник/):')
       return ctx.wizard.next()
     },
 
-    // 3. CRM / Instagram Link
+    // 3. ССЫЛКА И НИКНЕЙМ (С ПРОВЕРКОЙ)
     async (ctx) => {
-      const text = ctx.message?.text?.trim()
+      if (!ctx.message?.text) return 
+
+      const text = ctx.message.text.trim()
       
+      // 1. Простая проверка на URL
       if (!isValidUrl(text)) {
-        return ctx.reply('⚠️ Это не похоже на ссылку. Ссылка должна начинаться с https://')
+        return ctx.reply('⚠️ Это не ссылка. Отправь ссылку вида: https://www.instagram.com/username/')
       }
 
+      // 2. Проверка домена
       if (!text.includes('instagram.com')) {
-        return ctx.reply(`❌ Ссылка должна вести на Instagram (https://www.instagram.com/Никнейм/)`)
+        return ctx.reply('❌ Ссылка должна быть на Instagram.')
       }
 
+      // 3. Вытаскиваем никнейм
       const match = text.match(/instagram\.com\/([^/?#]+)/i)
       
       if (!match || !match[1]) {
-        return ctx.reply('❌ Не удалось найти никнейм в ссылке. Проверь формат: https://www.instagram.com/username/')
+        return ctx.reply('❌ Не могу найти никнейм в ссылке. Проверь формат.')
       }
 
-      const username = match[1]
-      ctx.wizard.state.payment.crmLink = `@${username}`
+      const username = match[1] // Чистый ник
+      ctx.wizard.state.payment.crmLink = `@${username}` // Сохраняем как @username
       
-      await ctx.reply(`✅ Никнейм принят: @${username}\n\nПришли скриншот оплаты (фото или файл):`)
+      await ctx.reply(`✅ Клиент: @${username}\n\nТеперь пришли скриншот оплаты (фото или файл):`)
       return ctx.wizard.next()
     },
 
-    // 4. Скриншот
+    // 4. СКРИНШОТ
     async (ctx) => {
-      const hasPhoto = ctx.message?.photo?.length > 0
-      const hasDoc = !!ctx.message?.document
-
-      if (!hasPhoto && !hasDoc) {
-        return ctx.reply('Пришли фото или файл.')
+      // Разрешаем фото или документ
+      if (!ctx.message?.photo && !ctx.message?.document) {
+        return ctx.reply('Нужно прислать картинку или файл скриншота.')
       }
 
-      ctx.wizard.state.payment.screenshotUrl = 'Скриншот получен (файл не сохранен)'
+      ctx.wizard.state.payment.screenshotUrl = 'Скриншот получен'
       
-      await ctx.reply('✅ Скриншот принят.')
       const example = getNowExample()
-      await ctx.reply(`Дата и время транзакции (например: ${example}):`)
+      await ctx.reply(`✅ Скрин принят.\n\nВведи дату и время продажи (например: ${example}):`)
       return ctx.wizard.next()
     },
 
-    // 5. Дата
+    // 5. ДАТА
     async (ctx) => {
       try {
         const t = ctx.message?.text || ''
         ctx.wizard.state.payment.transactionAt = parseDateTimeOrThrow(t)
       } catch {
         const example = getNowExample()
-        return ctx.reply(`Неверный формат. Нужно YYYY-MM-DD HH:mm (например: ${example})`)
+        return ctx.reply(`Неверный формат даты. Попробуй так: ${example}`)
       }
 
+      // Определяем валюту по стране менеджера
       const mgr = ctx.wizard.state.payment.manager
       const { country, currency } = resolveCountry(mgr.countriesRaw)
       ctx.wizard.state.payment.country = country
       ctx.wizard.state.payment.currency = currency
 
-      await ctx.reply(`Сумма оплаты в ${currency} (только число):`)
+      await ctx.reply(`Сумма оплаты в ${currency} (просто число):`)
       return ctx.wizard.next()
     },
 
-    // 6. Сумма
+    // 6. СУММА
     async (ctx) => {
       let val
       try { val = parseMoneyOrThrow(ctx.message?.text) } 
-      catch { return ctx.reply('Введи корректное число.') }
+      catch { return ctx.reply('Пожалуйста, введи корректное число (например: 1500).') }
 
       const p = ctx.wizard.state.payment
       p.amountLocal = val
       p.amountEUR = await convertToEUR(val, p.currency)
 
+      // Проверка на совпадение с тарифами (подсказка)
       if (p.amountEUR) {
         const check = isCloseToAnyProduct(p.amountEUR)
         if (!check.ok) {
            await ctx.reply(
-             `${val} ${p.currency} ≈ ${p.amountEUR} EUR. Верно?`,
+             `⚠️ ${val} ${p.currency} ≈ ${p.amountEUR} EUR. Это не похоже на стандартный тариф. Верно?`,
              Markup.inlineKeyboard([
-               Markup.button.callback('✅ Да', 'AM_OK'),
-               Markup.button.callback('✏️ Нет', 'AM_EDIT')
+               Markup.button.callback('✅ Да, верно', 'AM_OK'),
+               Markup.button.callback('✏️ Исправить', 'AM_EDIT')
              ])
            )
            return ctx.wizard.next()
@@ -160,26 +164,26 @@ export function createPaymentWizard() {
       return ctx.wizard.selectStep(8)
     },
 
-    // 7. Подтверждение суммы
+    // 7. ПОДТВЕРЖДЕНИЕ СУММЫ (если была странная)
     async (ctx) => {
       if (ctx.callbackQuery?.data === 'AM_EDIT') {
         await ctx.answerCbQuery()
-        await ctx.reply('Введи сумму заново:')
+        await ctx.reply('Введи правильную сумму:')
         return ctx.wizard.selectStep(6)
       }
-      await ctx.answerCbQuery()
+      await ctx.answerCbQuery() // AM_OK
       await askType(ctx)
       return ctx.wizard.next()
     },
 
-    // 8. Тип оплаты
+    // 8. ТИП ОПЛАТЫ
     async (ctx) => {
       if (!ctx.callbackQuery?.data) return
       await ctx.answerCbQuery()
       const t = ctx.callbackQuery.data.replace('TYPE_', '')
       
       if (t === 'Другое') {
-        await ctx.reply('Напиши тип вручную:')
+        await ctx.reply('Напиши тип/кошелек вручную:')
         return ctx.wizard.next() 
       }
 
@@ -188,7 +192,7 @@ export function createPaymentWizard() {
       return ctx.wizard.selectStep(10)
     },
 
-    // 9. Ввод типа вручную
+    // 9. ВВОД ТИПА ВРУЧНУЮ
     async (ctx) => {
       if (!ctx.message?.text) return
       ctx.wizard.state.payment.paymentType = ctx.message.text
@@ -196,25 +200,26 @@ export function createPaymentWizard() {
       return ctx.wizard.next() 
     },
 
-    // 10. Финал
+    // 10. ФИНАЛ И СОХРАНЕНИЕ
     async (ctx) => {
       const data = ctx.callbackQuery?.data
       if (data) await ctx.answerCbQuery().catch(() => {}) 
 
       if (data === 'CANCEL') {
-        await ctx.reply('❌ Отменено.')
+        await ctx.reply('❌ Отменено. Жми /start чтобы начать заново.')
         return ctx.scene.leave()
       }
 
       if (data === 'SEND') {
-        await ctx.reply('⏳ Сохраняю данные...')
+        await ctx.reply('⏳ Сохраняю...')
         const p = ctx.wizard.state.payment
 
         try {
+          // 1. Google Sheets
           await appendPaymentRow([
             new Date().toLocaleString('ru-RU'),
             p.manager.name,
-            p.crmLink,
+            p.crmLink, // Тут уже лежит @username
             p.transactionAt,
             p.amountLocal,
             p.amountEUR,
@@ -223,53 +228,23 @@ export function createPaymentWizard() {
             p.paymentType,
             p.product
           ])
+          // 2. Supabase
           await insertPayment(p)
           
-          await ctx.reply('✅ Платеж успешно сохранен! Можешь вводить следующий.')
+          await ctx.reply('✅ Успешно! Можешь вносить следующий платеж (/start).')
           return ctx.scene.leave()
         } catch (e) {
           console.error(e)
-          await ctx.reply(`❌ Ошибка сохранения: ${e.message}`)
+          await ctx.reply(`❌ Ошибка базы данных: ${e.message}`)
+          // Не выходим из сцены, даем шанс нажать кнопку еще раз
         }
       }
     }
   )
-
-  // ✅ 1. ИСПРАВЛЕННЫЙ ХЕНДЛЕР /start
-  // Теперь он НЕ выходит, а ПЕРЕЗАПУСКАЕТ процесс с нуля
-  wizard.command('start', async (ctx) => {
-    try {
-      // Повторяем проверку менеджера (так как reenter сбрасывает стейт)
-      const manager = await findManagerByTelegramIdInDB(ctx.from.id)
-      
-      if (!manager) {
-        await ctx.scene.leave()
-        return ctx.reply('⛔ Доступ запрещен. Тебя нет в базе или ты не активен.')
-      }
-
-      // Сохраняем менеджера и перезаходим в сцену
-      ctx.state.manager = manager
-      await ctx.reply('🔄 Перезапуск ввода...')
-      return ctx.scene.reenter()
-
-    } catch (e) {
-      console.error('Start in wizard error:', e)
-      await ctx.scene.leave()
-      return ctx.reply('Ошибка. Попробуй /start еще раз.')
-    }
-  })
-
-  // ✅ 2. ОБЫЧНАЯ ОТМЕНА
-  wizard.command(['reset', 'cancel'], async (ctx) => {
-    await ctx.reply('❌ Ввод данных отменен.')
-    return ctx.scene.leave()
-  })
-
-  return wizard
 }
 
 function askType(ctx) {
-  return ctx.reply('Тип платежа:', Markup.inlineKeyboard(TYPES.map(t => [Markup.button.callback(t, `TYPE_${t}`)])))
+  return ctx.reply('Куда пришли деньги?', Markup.inlineKeyboard(TYPES.map(t => [Markup.button.callback(t, `TYPE_${t}`)])))
 }
 
 function showFinal(ctx) {
