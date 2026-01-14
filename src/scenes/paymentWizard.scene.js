@@ -16,11 +16,10 @@ const PRODUCTS = [
 const TYPES = ['Lava', 'JETFEX', 'IBAN', 'Прямые реквизиты', 'Другое']
 
 export function createPaymentWizard() {
-  // 1. Создаем сцену и сохраняем в переменную (вместо return new...)
   const wizard = new Scenes.WizardScene(
     'paymentWizard',
 
-    // 0. Старт
+    // 0. Start
     async (ctx) => {
       ctx.wizard.state.payment = {
         manager: ctx.state.manager,
@@ -35,7 +34,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 1. Выбор продукта
+    // 1. Select Product
     async (ctx) => {
       if (!ctx.callbackQuery?.data) return
       await ctx.answerCbQuery()
@@ -57,7 +56,7 @@ export function createPaymentWizard() {
       return ctx.wizard.selectStep(3)
     },
     
-    // 2. Ручной ввод продукта
+    // 2. Manual Product Entry
     async (ctx) => {
       const text = ctx.message?.text?.trim()
       if (!text) return ctx.reply('Введи текст.')
@@ -66,16 +65,16 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 3. CRM / Instagram Link (✅ С ПРОВЕРКОЙ)
+    // 3. CRM / Instagram Link (With Validation)
     async (ctx) => {
       const text = ctx.message?.text?.trim()
       
-      // Проверка на валидный URL
+      // Basic URL check
       if (!isValidUrl(text)) {
         return ctx.reply('⚠️ Это не похоже на ссылку. Ссылка должна начинаться с https://')
       }
 
-      // Проверка на Instagram
+      // Instagram specific check
       const instagramPrefix = 'https://www.instagram.com/'
       if (!text.startsWith(instagramPrefix)) {
         return ctx.reply(`❌ Неверный формат.\nСсылка должна начинаться строго с: ${instagramPrefix}\nПопробуй еще раз или нажми /reset`)
@@ -86,7 +85,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 4. Скриншот
+    // 4. Screenshot
     async (ctx) => {
       const hasPhoto = ctx.message?.photo?.length > 0
       const hasDoc = !!ctx.message?.document
@@ -103,7 +102,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 5. Дата
+    // 5. Date
     async (ctx) => {
       try {
         const t = ctx.message?.text || ''
@@ -122,7 +121,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 6. Сумма
+    // 6. Amount
     async (ctx) => {
       let val
       try { val = parseMoneyOrThrow(ctx.message?.text) } 
@@ -151,7 +150,7 @@ export function createPaymentWizard() {
       return ctx.wizard.selectStep(8)
     },
 
-    // 7. Подтверждение суммы
+    // 7. Confirm Amount
     async (ctx) => {
       if (ctx.callbackQuery?.data === 'AM_EDIT') {
         await ctx.answerCbQuery()
@@ -163,7 +162,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next()
     },
 
-    // 8. Тип оплаты
+    // 8. Payment Type
     async (ctx) => {
       if (!ctx.callbackQuery?.data) return
       await ctx.answerCbQuery()
@@ -179,7 +178,7 @@ export function createPaymentWizard() {
       return ctx.wizard.selectStep(10)
     },
 
-    // 9. Ввод типа вручную
+    // 9. Manual Payment Type
     async (ctx) => {
       if (!ctx.message?.text) return
       ctx.wizard.state.payment.paymentType = ctx.message.text
@@ -187,7 +186,7 @@ export function createPaymentWizard() {
       return ctx.wizard.next() 
     },
 
-    // 10. Финал
+    // 10. Final
     async (ctx) => {
       const data = ctx.callbackQuery?.data
       if (data) await ctx.answerCbQuery().catch(() => {}) 
@@ -226,10 +225,17 @@ export function createPaymentWizard() {
     }
   )
 
-  // ✅ ДОБАВЛЯЕМ "АВАРИЙНЫЙ ВЫХОД"
-  // Эта команда сработает на ЛЮБОМ шаге сцены
-  wizard.command(['reset', 'cancel', 'start'], async (ctx) => {
-    await ctx.reply('🔄 Ввод данных сброшен. Можете начать заново командой меню.')
+  // 1. HANDLER FOR /start
+  // If user presses /start inside the scene, just exit silently to main menu
+  wizard.command('start', async (ctx) => {
+    await ctx.scene.leave()
+    await ctx.reply('🏠 Вы вышли из режима ввода оплаты. Нажмите /start или выберите команду меню.')
+  })
+
+  // 2. HANDLER FOR CANCEL
+  // Works on any step to abort the process
+  wizard.command(['reset', 'cancel'], async (ctx) => {
+    await ctx.reply('❌ Ввод данных отменен.')
     return ctx.scene.leave()
   })
 
